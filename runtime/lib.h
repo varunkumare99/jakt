@@ -311,7 +311,7 @@ ALWAYS_INLINE Optional<OutputType> fallible_integer_cast(InputType input)
     if constexpr (IsEnum<InputType>) {
         return fallible_integer_cast<OutputType>(to_underlying(input));
     } else {
-        static_assert(IsIntegral<InputType>);
+        static_assert(IsIntegral<InputType> || IsFloatingPoint<InputType>);
         if (!Jakt::is_within_range<OutputType>(input))
             return {};
         return static_cast<OutputType>(input);
@@ -327,7 +327,7 @@ ALWAYS_INLINE constexpr OutputType infallible_integer_cast(InputType input)
     if constexpr (IsEnum<InputType>) {
         return infallible_integer_cast<OutputType>(to_underlying(input));
     } else {
-        static_assert(IsIntegral<InputType>);
+        static_assert(IsIntegral<InputType> || IsFloatingPoint<InputType>);
         if (is_constant_evaluated()) {
             if (!Jakt::is_within_range<OutputType>(input))
                 compiletime_fail("Integer cast out of range");

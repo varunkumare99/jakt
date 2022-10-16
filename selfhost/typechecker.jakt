@@ -3179,7 +3179,28 @@ struct Typechecker {
                 return CheckedExpression::UnaryOp(expr: checked_expr, op: checked_op, span, type_id: expr_type_id)
             }
             TypeCast(cast) => {
-                return CheckedExpression::UnaryOp(expr: checked_expr, op: checked_op, span, type_id: cast.type_id())
+                if (.is_numeric(expr_type_id) | expr_type is Enum(name)) 
+                    and .is_numeric(cast.type_id()) {
+                    return CheckedExpression::UnaryOp(expr: checked_expr, op: checked_op, span, type_id: cast.type_id())
+                }
+				if .get_type(cast.type_id()) is GenericInstance(id, args) {
+					let optional_struct_id = .find_struct_in_prelude("Optional")
+					if (id.equals(optional_struct_id)) {
+						return CheckedExpression::UnaryOp(expr: checked_expr, op: checked_op, span, type_id: cast.type_id())
+					}
+				}
+				//if .type_name(cast.type_id()) is OptionalSome(expr, span) {
+				//if .get_type(cast.type_id()) is GenericInstance(id, args){
+				//	let type_id = expr_type_id
+				//	let optional_struct_id = .find_struct_in_prelude("Optional")
+				//	let optional_type = Type::GenericInstance(id: optional_struct_id, args: [type_id])
+				//	let optional_type_id = .find_or_add_type_id(optional_type)
+				//	println("varun type id name {} , id value {}", .type_name(optional_type_id), optional_type_id)
+				//}
+			//	OptionalSome(expr, span) => {
+			//		yield CheckedExpression::OptionalSome(expr: checked_expr, span, type_id: optional_type_id)
+			//	}
+                .error(format("Typecasting not allowed from {} to {}", .type_name(expr_type_id), .type_name(cast.type_id())), span)
             }
             Negate => {
                 return .typecheck_unary_negate(expr: checked_expr, span, type_id: expr_type_id)

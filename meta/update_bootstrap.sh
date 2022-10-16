@@ -2,8 +2,8 @@
 
 set -e
 
-: "${CURRENT_JAKT_COMPILER:=Build/bin/jakt}"
-: "${JAKT_RUNTIME_DIR:=Build/lib}"
+: "${CURRENT_JAKT_COMPILER:=build/bin/jakt}"
+: "${JAKT_RUNTIME_DIR:=build/lib}"
 
 # First, get a working build of the compiler
 "$CURRENT_JAKT_COMPILER" --runtime-library-path "$JAKT_RUNTIME_DIR" selfhost/main.jakt

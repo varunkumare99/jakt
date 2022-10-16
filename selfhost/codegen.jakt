@@ -1558,7 +1558,7 @@ struct CodeGenerator {
                         }
                         Infallible => {
                             mut cast_type = "verify_cast"
-                            if .program.is_integer(type_id) {
+                            if .program.is_numeric(type_id) | .program.is_numeric(final_type_id) {
                                 cast_type = "infallible_integer_cast"
                             }
                             yield cast_type
