@@ -285,98 +285,98 @@ boxed enum Type {
             return true
         } else if this is CInt and rhs is CInt {
             return true
-        } else {
-            match this {
-                TypeVariable(lhs_name) => {
-                    if rhs is TypeVariable(rhs_name) {
-                        return lhs_name == rhs_name
-                    } else {
-                        return false
-                    }
-                }
-                GenericInstance(id: lhs_id, args: lhs_args) => {
-                    guard rhs is GenericInstance(id: rhs_id, args: rhs_args) 
-                        and lhs_id.equals(rhs_id)
-                        and lhs_args.size() == rhs_args.size() else {
-                        return false
-                    }
-                    mut idx = 0uz
-                    while idx < lhs_args.size() {
-                        if not lhs_args[idx].equals(rhs_args[idx]) {
-                            return false
-                        }
-                        idx++
-                    }
-                    return true
-                }
-                GenericEnumInstance(id: lhs_id, args: lhs_args) => {
-                    guard rhs is GenericEnumInstance(id: rhs_id, args: rhs_args)
-                        and lhs_id.equals(rhs_id)
-                        and lhs_args.size() == rhs_args.size() else {
-                        return false
-                    }
-                    mut idx = 0uz
-                    while idx < lhs_args.size() {
-                        if not lhs_args[idx].equals(rhs_args[idx]) {
-                            return false
-                        }
-                        idx++
-                    }
-                    return true
-                }
-                Struct(lhs_id) => {
-                    if rhs is Struct(rhs_id) {
-                        return lhs_id.equals(rhs_id)
-                    }
-                    return false
-                }
-                Enum(lhs_id) => {
-                    if rhs is Enum(rhs_id) {
-                        return lhs_id.equals(rhs_id)
-                    } else {
-                        return false
-                    }
-                }
-                RawPtr(lhs_id) => {
-                    if rhs is RawPtr(rhs_id) {
-                        return lhs_id.equals(rhs_id)
-                    } else {
-                        return false
-                    }
-                }
-                Reference(lhs_id) => {
-                    if rhs is Reference(rhs_id) {
-                        return lhs_id.equals(rhs_id)
-                    } else {
-                        return false
-                    }
-                }
-                MutableReference(lhs_id) => {
-                    if rhs is MutableReference(rhs_id) {
-                        return lhs_id.equals(rhs_id)
-                    } else {
-                        return false
-                    }
-                }
-                Function(params, can_throw, return_type_id) => {
-                    guard rhs is Function(params: rhs_params, can_throw: rhs_can_throw, return_type_id: rhs_return_type_id)
-                        and params.size() == rhs_params.size()
-                        and return_type_id.equals(rhs_return_type_id)
-                        and can_throw == rhs_can_throw else {
-                        return false
-                    }
-                    for i in 0..params.size() {
-                        if not params[i].equals(rhs_params[i]) {
-                            return false
-                        }
-                    }
-                    return true
-                }
-                else => {
+        }
+        
+        match this {
+            TypeVariable(lhs_name) => {
+                if rhs is TypeVariable(rhs_name) {
+                    return lhs_name == rhs_name
+                } else {
                     return false
                 }
             }
+            GenericInstance(id: lhs_id, args: lhs_args) => {
+                guard rhs is GenericInstance(id: rhs_id, args: rhs_args) 
+                    and lhs_id.equals(rhs_id)
+                    and lhs_args.size() == rhs_args.size() else {
+                    return false
+                }
+                mut idx = 0uz
+                while idx < lhs_args.size() {
+                    if not lhs_args[idx].equals(rhs_args[idx]) {
+                        return false
+                    }
+                    idx++
+                }
+                return true
+            }
+            GenericEnumInstance(id: lhs_id, args: lhs_args) => {
+                guard rhs is GenericEnumInstance(id: rhs_id, args: rhs_args)
+                    and lhs_id.equals(rhs_id)
+                    and lhs_args.size() == rhs_args.size() else {
+                    return false
+                }
+                mut idx = 0uz
+                while idx < lhs_args.size() {
+                    if not lhs_args[idx].equals(rhs_args[idx]) {
+                        return false
+                    }
+                    idx++
+                }
+                return true
+            }
+            Struct(lhs_id) => {
+                if rhs is Struct(rhs_id) {
+                    return lhs_id.equals(rhs_id)
+                }
+                return false
+            }
+            Enum(lhs_id) => {
+                if rhs is Enum(rhs_id) {
+                    return lhs_id.equals(rhs_id)
+                } else {
+                    return false
+                }
+            }
+            RawPtr(lhs_id) => {
+                if rhs is RawPtr(rhs_id) {
+                    return lhs_id.equals(rhs_id)
+                } else {
+                    return false
+                }
+            }
+            Reference(lhs_id) => {
+                if rhs is Reference(rhs_id) {
+                    return lhs_id.equals(rhs_id)
+                } else {
+                    return false
+                }
+            }
+            MutableReference(lhs_id) => {
+                if rhs is MutableReference(rhs_id) {
+                    return lhs_id.equals(rhs_id)
+                } else {
+                    return false
+                }
+            }
+            Function(params, can_throw, return_type_id) => {
+                guard rhs is Function(params: rhs_params, can_throw: rhs_can_throw, return_type_id: rhs_return_type_id)
+                    and params.size() == rhs_params.size()
+                    and return_type_id.equals(rhs_return_type_id)
+                    and can_throw == rhs_can_throw else {
+                    return false
+                }
+                for i in 0..params.size() {
+                    if not params[i].equals(rhs_params[i]) {
+                        return false
+                    }
+                }
+                return true
+            }
+            else => {}
         }
+
+        return false
     }
 
     function is_builtin(this) -> bool => match this {
@@ -586,6 +586,7 @@ class CheckedFunction {
     public type: FunctionType
     public linkage: FunctionLinkage
     public function_scope_id: ScopeId
+    public struct_id: StructId?
     public is_instantiated: bool
     public parsed_function: ParsedFunction?
     public is_comptime: bool
@@ -840,11 +841,16 @@ struct FieldRecord {
     field_id: VarId
 }
 
+struct CheckedField {
+    variable_id: VarId
+    default_value: CheckedExpression?
+}
+
 struct CheckedStruct {
     name: String
     name_span: Span
     generic_parameters: [TypeId]
-    fields: [VarId]
+    fields: [CheckedField]
     scope_id: ScopeId
     definition_linkage: DefinitionLinkage
     record_type: RecordType
@@ -1784,6 +1790,7 @@ class CheckedProgram {
                     type: previous_function.type
                     linkage: previous_function.linkage
                     function_scope_id: previous_function.function_scope_id
+                    struct_id: previous_function.struct_id
                     is_instantiated: previous_function.is_instantiated
                     parsed_function: previous_function.parsed_function
                     is_comptime: previous_function.is_comptime
@@ -1825,6 +1832,7 @@ boxed enum ValueImpl {
     Enum(fields: [Value], enum_id: EnumId, constructor: FunctionId)
     JaktArray(values: [Value], type_id: TypeId)
     JaktDictionary(keys: [Value], values: [Value], type_id: TypeId)
+    JaktSet(values: [Value], type_id: TypeId)
     RawPtr(ValueImpl)
     OptionalSome(value: Value)
     OptionalNone
@@ -1880,6 +1888,13 @@ boxed enum ValueImpl {
                 keys_copy.push(key.copy())
             }
             yield ValueImpl::JaktDictionary(keys: keys_copy, values: values_copy, type_id)
+        }
+        JaktSet(values, type_id) => {
+            mut values_copy: [Value] = []
+            for value in values.iterator() {
+                values_copy.push(value.copy())
+            }
+            yield ValueImpl::JaktSet(values: values_copy, type_id)
         }
         RawPtr(value) => ValueImpl::RawPtr(value)
         OptionalSome(value) => ValueImpl::OptionalSome(value: value.copy())
@@ -1942,6 +1957,7 @@ struct Value {
         Enum => "enum <T>"
         JaktArray => "Array"
         JaktDictionary => "Dictionary"
+        JaktSet => "Set"
         RawPtr => "raw <T>"
         OptionalSome => "Some"
         OptionalNone => "None"

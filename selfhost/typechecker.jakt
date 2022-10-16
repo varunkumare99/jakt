@@ -17,7 +17,7 @@ import parser { Parser, BinaryOperator, DefinitionLinkage, UnaryOperator,
                 ParsedMethod }
 import types {
     BlockControlFlow, BuiltinType, CheckedBlock, CheckedCall, CheckedCapture, CheckedEnum, CheckedEnumVariant,
-    CheckedEnumVariantBinding, CheckedExpression, CheckedFunction, FunctionGenerics, CheckedMatchBody, CheckedMatchCase,
+    CheckedEnumVariantBinding, CheckedExpression, CheckedFunction, CheckedField, FunctionGenerics, CheckedMatchBody, CheckedMatchCase,
     CheckedNamespace, CheckedNumericConstant, CheckedParameter, CheckedProgram, CheckedStatement, CheckedStruct,
     CheckedTypeCast, CheckedUnaryOperator, CheckedVariable, CheckedVisibility, EnumId, FieldRecord, FunctionGenericParameter,
     FunctionId, LoadedModule, Module, ModuleId, NumberConstant, ResolvedNamespace, SafetyMode, Scope, ScopeId, StructId,
@@ -125,10 +125,10 @@ struct Typechecker {
         }
 
         for current_struct_id in chain.iterator() {
-            for field_id in .get_struct(current_struct_id).fields.iterator() {
-                let field = .get_variable(field_id)
-                if field.name == name {
-                    return FieldRecord(struct_id: current_struct_id, field_id)
+            for field in .get_struct(current_struct_id).fields.iterator() {
+                let variable = .get_variable(field.variable_id)
+                if variable.name == name {
+                    return FieldRecord(struct_id: current_struct_id, field_id: field.variable_id)
                 }
             }
         }
@@ -585,7 +585,7 @@ struct Typechecker {
             .check_that_type_doesnt_contain_reference(type_id: checked_member_type, span: parsed_var_decl.parsed_type.span())
 
             mut module = .current_module()
-            let var_id = module.add_variable(checked_variable: CheckedVariable(
+            let variable_id = module.add_variable(checked_variable: CheckedVariable(
                 name: parsed_var_decl.name
                 type_id: checked_member_type
                 is_mutable: parsed_var_decl.is_mutable
@@ -593,7 +593,16 @@ struct Typechecker {
                 type_span: None
                 visibility: .typecheck_visibility(visibility: unchecked_member.visibility, scope_id: checked_struct_scope_id)
             ))
-            structure.fields.push(var_id)
+            mut default_value: CheckedExpression? = None
+            if unchecked_member.default_value.has_value() {
+                default_value = .typecheck_expression(
+                    unchecked_member.default_value!,
+                    scope_id: checked_struct_scope_id,
+                    safety_mode: SafetyMode::Safe,
+                    type_hint: None
+                )
+            }
+            structure.fields.push(CheckedField(variable_id, default_value))
         }
     }
 
@@ -1108,6 +1117,7 @@ struct Typechecker {
                 type: func.type
                 linkage: func.linkage
                 function_scope_id: method_scope_id
+                struct_id: None
                 is_instantiated: not is_generic or is_extern
                 parsed_function: func
                 is_comptime: func.is_comptime
@@ -1256,6 +1266,7 @@ struct Typechecker {
                 type: FunctionType::ImplicitConstructor
                 linkage: FunctionLinkage::Internal
                 function_scope_id
+                struct_id
                 is_instantiated: true
                 parsed_function: None
                 is_comptime: false
@@ -1271,16 +1282,12 @@ struct Typechecker {
 
             mut func = module.functions.last()!
             for field_struct_id in inheritance_chain.iterator() {
-                for field_id in .get_struct(field_struct_id).fields.iterator() {
-                    let field = .get_variable(field_id)
-                    if field.visibility is Private {
-                        checked_constructor.visibility = CheckedVisibility::Private
-                    }
-
+                for field in .get_struct(field_struct_id).fields.iterator() {
+                    let variable = .get_variable(field.variable_id)
                     func.add_param(CheckedParameter(
                         requires_label: true
-                        variable: field
-                        default_value: None
+                        variable: variable
+                        default_value: field.default_value
                     ))
                 }
             }
@@ -1419,6 +1426,7 @@ struct Typechecker {
                 type: func.type
                 linkage: func.linkage
                 function_scope_id: method_scope_id
+                struct_id: None
                 is_instantiated: not is_generic or is_extern
                 parsed_function: method.parsed_function
                 is_comptime: method.parsed_function.is_comptime
@@ -1747,6 +1755,7 @@ struct Typechecker {
                                 type: FunctionType::ImplicitEnumConstructor
                                 linkage: FunctionLinkage::Internal
                                 function_scope_id
+                                struct_id: None
                                 is_instantiated: true
                                 parsed_function: None
                                 is_comptime: false
@@ -1799,6 +1808,7 @@ struct Typechecker {
                                 type: FunctionType::ImplicitEnumConstructor
                                 linkage: FunctionLinkage::Internal
                                 function_scope_id
+                                struct_id: None
                                 is_instantiated: true
                                 parsed_function: None
                                 is_comptime: false
@@ -1838,6 +1848,7 @@ struct Typechecker {
                                 type: FunctionType::ImplicitEnumConstructor
                                 linkage: FunctionLinkage::Internal
                                 function_scope_id
+                                struct_id: None
                                 is_instantiated: true
                                 parsed_function: None
                                 is_comptime: false
@@ -2076,6 +2087,7 @@ struct Typechecker {
             type: FunctionType::Normal
             linkage: parsed_function.linkage
             function_scope_id
+            struct_id: None
             is_instantiated: not is_generic or not base_definition
             parsed_function
             is_comptime: parsed_function.is_comptime
@@ -2148,7 +2160,6 @@ struct Typechecker {
 
         // Check return type
         mut function_return_type_id = .typecheck_typename(parsed_type: parsed_function.return_type, scope_id: checked_function_scope_id, name: None)
-
         if not parsed_function.is_fat_arrow and parsed_function.return_type is Empty {
             function_return_type_id = void_type_id()
         }
@@ -2927,222 +2938,210 @@ struct Typechecker {
         return checked_block
     }
 
-    function typecheck_typename(mut this, parsed_type: ParsedType, scope_id: ScopeId, name: String?) throws -> TypeId {
-        match parsed_type {
-            Reference(inner) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
-                let type_id = .find_or_add_type_id(Type::Reference(id: inner_type_id))
-                return type_id
-            }
-            MutableReference(inner) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
-                let type_id = .find_or_add_type_id(Type::MutableReference(id: inner_type_id))
-                return type_id
-            }
-            NamespacedName(name, namespaces, params, span) => {
-                mut current_namespace_scope_id = scope_id
+    function typecheck_typename(mut this, parsed_type: ParsedType, scope_id: ScopeId, name: String?) throws -> TypeId => match parsed_type {
+        Reference(inner) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
+            yield .find_or_add_type_id(Type::Reference(id: inner_type_id))
+        }
+        MutableReference(inner) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
+            yield .find_or_add_type_id(Type::MutableReference(id: inner_type_id))
+        }
+        NamespacedName(name, namespaces, params, span) => {
+            mut current_namespace_scope_id = scope_id
 
-                for ns in namespaces.iterator() {
-                    let result = .find_namespace_in_scope(scope_id: current_namespace_scope_id, name: ns)
+            for ns in namespaces.iterator() {
+                let result = .find_namespace_in_scope(scope_id: current_namespace_scope_id, name: ns)
 
-                    if result.has_value() {
-                        current_namespace_scope_id = result!.0
-                    } else {
-                        .error(format("Unknown namespace: '{}'", ns), span)
-                        return unknown_type_id()
-                    }
-                }
-
-                mut generic_args: [TypeId] = []
-
-                for param in params.iterator() {
-                    let checked_arg = .typecheck_typename(parsed_type: param, scope_id, name)
-
-                    generic_args.push(checked_arg)
-                }
-
-                if generic_args.is_empty() {
-                    let synthetic_typename = ParsedType::Name(name, span)
-                    // TODO: add and generic support
-                    return .typecheck_typename(parsed_type: synthetic_typename, scope_id: current_namespace_scope_id, name)
+                if result.has_value() {
+                    current_namespace_scope_id = result!.0
                 } else {
-                    return .typecheck_generic_resolved_type(name, checked_inner_types: generic_args, scope_id: current_namespace_scope_id, span)
+                    .error(format("Unknown namespace: '{}'", ns), span)
+                    return unknown_type_id()
                 }
             }
-            Name(name, span) => {
-                let maybe_type_and_scope = .find_type_scope(scope_id, name)
-                if maybe_type_and_scope.has_value() {
-                    if not maybe_type_and_scope!.1.equals(.prelude_scope_id()) {
+
+            mut generic_args: [TypeId] = []
+
+            for param in params.iterator() {
+                let checked_arg = .typecheck_typename(parsed_type: param, scope_id, name)
+
+                generic_args.push(checked_arg)
+            }
+
+            mut type_id: TypeId? = None
+            if generic_args.is_empty() {
+                let synthetic_typename = ParsedType::Name(name, span)
+                // TODO: add and generic support
+                type_id = .typecheck_typename(parsed_type: synthetic_typename, scope_id: current_namespace_scope_id, name)
+            } else {
+                type_id = .typecheck_generic_resolved_type(name, checked_inner_types: generic_args, scope_id: current_namespace_scope_id, span)
+            }
+
+            yield type_id!
+        }
+        Name(name, span) => {
+            let maybe_type_and_scope = .find_type_scope(scope_id, name)
+            if maybe_type_and_scope.has_value() {
+                if not maybe_type_and_scope!.1.equals(.prelude_scope_id()) {
+                    return maybe_type_and_scope!.0
+                }
+            }
+
+            yield match name {
+                "i8" => builtin(BuiltinType::I8)
+                "i16" => builtin(BuiltinType::I16)
+                "i32" => builtin(BuiltinType::I32)
+                "i64" => builtin(BuiltinType::I64)
+                "u8" => builtin(BuiltinType::U8)
+                "u16" => builtin(BuiltinType::U16)
+                "u32" => builtin(BuiltinType::U32)
+                "u64" => builtin(BuiltinType::U64)
+                "f32" => builtin(BuiltinType::F32)
+                "f64" => builtin(BuiltinType::F64)
+                "c_char" => builtin(BuiltinType::CChar)
+                "c_int" => builtin(BuiltinType::CInt)
+                "usize" => builtin(BuiltinType::Usize)
+                "String" => builtin(BuiltinType::JaktString)
+                "bool" => builtin(BuiltinType::Bool)
+                "void" => builtin(BuiltinType::Void)
+                "never" => builtin(BuiltinType::Never)
+                else => {
+                    if maybe_type_and_scope.has_value() {
                         return maybe_type_and_scope!.0
                     }
-                }
 
-                return match name {
-                    "i8" => builtin(BuiltinType::I8)
-                    "i16" => builtin(BuiltinType::I16)
-                    "i32" => builtin(BuiltinType::I32)
-                    "i64" => builtin(BuiltinType::I64)
-                    "u8" => builtin(BuiltinType::U8)
-                    "u16" => builtin(BuiltinType::U16)
-                    "u32" => builtin(BuiltinType::U32)
-                    "u64" => builtin(BuiltinType::U64)
-                    "f32" => builtin(BuiltinType::F32)
-                    "f64" => builtin(BuiltinType::F64)
-                    "c_char" => builtin(BuiltinType::CChar)
-                    "c_int" => builtin(BuiltinType::CInt)
-                    "usize" => builtin(BuiltinType::Usize)
-                    "String" => builtin(BuiltinType::JaktString)
-                    "bool" => builtin(BuiltinType::Bool)
-                    "void" => builtin(BuiltinType::Void)
-                    "never" => builtin(BuiltinType::Never)
-                    else => {
-                        if maybe_type_and_scope.has_value() {
-                            return maybe_type_and_scope!.0
-                        }
-
-                        .error(format("Unknown type ‘{}’", name), span)
-                        return unknown_type_id()
-                    }
+                    .error(format("Unknown type ‘{}’", name), span)
+                    yield unknown_type_id()
                 }
             }
-            Empty => {
-                return unknown_type_id()
+        }
+        Empty => {
+            yield unknown_type_id()
+        }
+        JaktTuple(types, span) => {
+            mut checked_types: [TypeId] = []
+            for parsed_type in types.iterator() {
+                checked_types.push(.typecheck_typename(parsed_type, scope_id, name))
             }
-            JaktTuple(types, span) => {
-                mut checked_types: [TypeId] = []
-                for parsed_type in types.iterator() {
-                    checked_types.push(.typecheck_typename(parsed_type, scope_id, name))
-                }
-                let tuple_struct_id = .find_struct_in_prelude("Tuple")
+            let tuple_struct_id = .find_struct_in_prelude("Tuple")
 
-                let type_id = .find_or_add_type_id(Type::GenericInstance(id: tuple_struct_id, args: checked_types))
+            yield .find_or_add_type_id(Type::GenericInstance(id: tuple_struct_id, args: checked_types))
+        }
+        JaktArray(inner, span) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
 
-                return type_id
+            let array_struct_id = .find_struct_in_prelude("Array")
+
+            yield .find_or_add_type_id(Type::GenericInstance(id: array_struct_id, args: [inner_type_id]))
+        }
+        Dictionary(key, value, span) => {
+            let key_type_id = .typecheck_typename(parsed_type: key, scope_id, name)
+            let value_type_id = .typecheck_typename(parsed_type: value, scope_id, name)
+
+            let dict_struct_id = .find_struct_in_prelude("Dictionary")
+
+            yield .find_or_add_type_id(Type::GenericInstance(id: dict_struct_id, args: [key_type_id, value_type_id]))
+        }
+        Set(inner, span) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
+
+            let set_struct_id = .find_struct_in_prelude("Set")
+
+            yield .find_or_add_type_id(Type::GenericInstance(id: set_struct_id, args: [inner_type_id]))
+        }
+        Optional(inner, span) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
+
+            let optional_struct_id = .find_struct_in_prelude("Optional")
+
+            yield .find_or_add_type_id(Type::GenericInstance(id: optional_struct_id, args: [inner_type_id]))
+        }
+        WeakPtr(inner, span) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
+
+            let weakptr_struct_id = .find_struct_in_prelude("WeakPtr")
+
+            yield .find_or_add_type_id(Type::GenericInstance(id: weakptr_struct_id, args: [inner_type_id]))
+        }
+        RawPtr(inner, span) => {
+            let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
+
+            yield .find_or_add_type_id(Type::RawPtr(id: inner_type_id))
+        }
+        GenericType(name, generic_parameters, span) => {
+            mut checked_inner_types: [TypeId] = []
+
+            for inner_type in generic_parameters.iterator() {
+                let inner_type_id = .typecheck_typename(parsed_type: inner_type, scope_id, name)
+                checked_inner_types.push(inner_type_id)
             }
-            JaktArray(inner, span) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
 
-                let array_struct_id = .find_struct_in_prelude("Array")
-
-                let type_id = .find_or_add_type_id(Type::GenericInstance(id: array_struct_id, args: [inner_type_id]))
-
-                return type_id
+            yield .typecheck_generic_resolved_type(name, checked_inner_types, scope_id, span)
+        }
+        Function(params, can_throw, return_type, span) => {
+            let function_name = match name.has_value() {
+                true => name!
+                else => (try format("lambda{}", .lambda_count++)) ?? ""
             }
-            Dictionary(key, value, span) => {
-                let key_type_id = .typecheck_typename(parsed_type: key, scope_id, name)
-                let value_type_id = .typecheck_typename(parsed_type: value, scope_id, name)
 
-                let dict_struct_id = .find_struct_in_prelude("Dictionary")
+            mut checked_params: [CheckedParameter] = []
+            mut first = true
 
-                let type_id = .find_or_add_type_id(Type::GenericInstance(id: dict_struct_id, args: [key_type_id, value_type_id]))
-
-                return type_id
+            let old_generic_inferences = .generic_inferences.perform_checkpoint(reset: false)
+            defer {
+                .generic_inferences.restore(old_generic_inferences)
             }
-            Set(inner, span) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
 
-                let set_struct_id = .find_struct_in_prelude("Set")
-
-                let type_id = .find_or_add_type_id(Type::GenericInstance(id: set_struct_id, args: [inner_type_id]))
-
-                return type_id
+            for param in params.iterator() {
+                checked_params.push(.typecheck_parameter(parameter: param, scope_id, first, this_arg_type_id: None, check_scope: None))
+                first = false
             }
-            Optional(inner, span) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
 
-                let optional_struct_id = .find_struct_in_prelude("Optional")
-
-                let type_id = .find_or_add_type_id(Type::GenericInstance(id: optional_struct_id, args: [inner_type_id]))
-
-                return type_id
-            }
-            WeakPtr(inner, span) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
-
-                let weakptr_struct_id = .find_struct_in_prelude("WeakPtr")
-
-                let type_id = .find_or_add_type_id(Type::GenericInstance(id: weakptr_struct_id, args: [inner_type_id]))
-
-                return type_id
-            }
-            RawPtr(inner, span) => {
-                let inner_type_id = .typecheck_typename(parsed_type: inner, scope_id, name)
-
-                let type_id = .find_or_add_type_id(Type::RawPtr(id: inner_type_id))
-
-                return type_id
-            }
-            GenericType(name, generic_parameters, span) => {
-                mut checked_inner_types: [TypeId] = []
-
-                for inner_type in generic_parameters.iterator() {
-                    let inner_type_id = .typecheck_typename(parsed_type: inner_type, scope_id, name)
-                    checked_inner_types.push(inner_type_id)
-                }
-
-                return .typecheck_generic_resolved_type(name, checked_inner_types, scope_id, span)
-            }
-            Function(params, can_throw, return_type, span) => {
-                let function_name = match name.has_value() {
-                    true => name!
-                    else => (try format("lambda{}", .lambda_count++)) ?? ""
-                }
-                mut checked_params: [CheckedParameter] = []
-                mut first = true
-
-                let old_generic_inferences = .generic_inferences.perform_checkpoint(reset: false)
-                defer {
-                    .generic_inferences.restore(old_generic_inferences)
-                }
-
-                for param in params.iterator() {
-                    checked_params.push(.typecheck_parameter(parameter: param, scope_id, first, this_arg_type_id: None, check_scope: None))
-                    first = false
-                }
-
-                let checked_function = CheckedFunction(
-                    name: function_name
-                    name_span: span
-                    visibility: CheckedVisibility::Public
-                    return_type_id: .typecheck_typename(parsed_type: return_type, scope_id, name: None)
-                    return_type_span: return_type.span()
-                    params: checked_params
-                    generics: FunctionGenerics(
-                        base_params: checked_params
-                        params: []
-                        specializations: []
-                    )
-                    block: CheckedBlock(
-                        statements: []
-                        scope_id
-                        control_flow: BlockControlFlow::MayReturn
-                        yielded_type: None
-                        yielded_none: false
-                    )
-                    can_throw
-                    type: FunctionType::Expression
-                    linkage: FunctionLinkage::Internal
-                    function_scope_id: scope_id
-                    is_instantiated: true
-                    parsed_function: None
-                    is_comptime: false
-                    is_virtual: false
-                    is_override: false
+            let checked_function = CheckedFunction(
+                name: function_name
+                name_span: span
+                visibility: CheckedVisibility::Public
+                return_type_id: .typecheck_typename(parsed_type: return_type, scope_id, name: None)
+                return_type_span: return_type.span()
+                params: checked_params
+                generics: FunctionGenerics(
+                    base_params: checked_params
+                    params: []
+                    specializations: []
                 )
-                mut module = .current_module()
-                let function_id = module.add_function(checked_function)
+                block: CheckedBlock(
+                    statements: []
+                    scope_id
+                    control_flow: BlockControlFlow::MayReturn
+                    yielded_type: None
+                    yielded_none: false
+                )
+                can_throw
+                type: FunctionType::Expression
+                linkage: FunctionLinkage::Internal
+                function_scope_id: scope_id
+                struct_id: None
+                is_instantiated: true
+                parsed_function: None
+                is_comptime: false
+                is_virtual: false
+                is_override: false
+            )
+            mut module = .current_module()
+            let function_id = module.add_function(checked_function)
 
-                mut param_type_ids: [TypeId] = []
-                for param in checked_function.params.iterator() {
-                    param_type_ids.push(param.variable.type_id)
-                }
-
-                return .find_or_add_type_id(Type::Function(
-                    params: param_type_ids
-                    can_throw
-                    return_type_id: checked_function.return_type_id
-                    pseudo_function_id: function_id))
+            mut param_type_ids: [TypeId] = []
+            for param in checked_function.params.iterator() {
+                param_type_ids.push(param.variable.type_id)
             }
+
+            yield .find_or_add_type_id(Type::Function(
+                params: param_type_ids
+                can_throw
+                return_type_id: checked_function.return_type_id
+                pseudo_function_id: function_id
+            ))
         }
     }
 
@@ -3490,7 +3489,7 @@ struct Typechecker {
             .error("Condition must be a boolean expression", new_condition.span())
         }
 
-        let checked_block = .typecheck_block(new_then_block, parent_scope_id: scope_id, safety_mode)
+        let checked_block = .typecheck_block(new_then_block!, parent_scope_id: scope_id, safety_mode)
         mut checked_else: CheckedStatement? = None
         if new_else_statement.has_value() {
             checked_else = .typecheck_statement(new_else_statement!, scope_id, safety_mode)
@@ -3683,7 +3682,7 @@ struct Typechecker {
         return .typecheck_statement(rewritten_statement, scope_id, safety_mode)
     }
 
-    function expand_context_for_bindings(mut this, condition: ParsedExpression, acc: ParsedExpression?, then_block: ParsedBlock, else_statement: ParsedStatement?, span: Span) throws -> (ParsedExpression, ParsedBlock, ParsedStatement?) {
+    function expand_context_for_bindings(mut this, condition: ParsedExpression, acc: ParsedExpression?, then_block: ParsedBlock?, else_statement: ParsedStatement?, span: Span) throws -> (ParsedExpression, ParsedBlock?, ParsedStatement?) {
         match condition {
             BinaryOp(lhs, op, rhs) => {
                 if op is LogicalAnd {
@@ -3709,18 +3708,20 @@ struct Typechecker {
                             outer_if_stmts.push(ParsedStatement::VarDecl(var, init: enum_variant_arg, span))
                         }
                         mut inner_condition = condition
-                        mut new_then_block = then_block
-                        mut new_else_statement = else_statement
-                        if acc.has_value() {
-                            inner_condition = acc!
-                            outer_if_stmts.push(ParsedStatement::If(condition: inner_condition, then_block, else_statement, span))
-                        } else {
-                            for stmt in then_block.stmts.iterator() {
-                                outer_if_stmts.push(stmt)
+                        if then_block.has_value() {
+                            if acc.has_value() {
+                                inner_condition = acc!
+                                outer_if_stmts.push(ParsedStatement::If(condition: inner_condition, then_block: then_block!, else_statement, span))
+                            } else {
+                                for stmt in then_block!.stmts.iterator() {
+                                    outer_if_stmts.push(stmt)
+                                }
                             }
                         }
-                        new_then_block = ParsedBlock(stmts: outer_if_stmts)
-                        return .expand_context_for_bindings(condition: unary_op_single_condition, acc: None, then_block: new_then_block, else_statement: new_else_statement, span)
+
+                        let new_then_block = ParsedBlock(stmts: outer_if_stmts)
+                        return .expand_context_for_bindings(condition: unary_op_single_condition, acc: None, then_block: new_then_block, else_statement, span)
+                        
                     }
                     else => {}
                 }
@@ -3737,13 +3738,14 @@ struct Typechecker {
     function typecheck_if(mut this, condition: ParsedExpression, then_block: ParsedBlock, else_statement: ParsedStatement?, scope_id: ScopeId, safety_mode: SafetyMode, span: Span) throws -> CheckedStatement {
         let (new_condition, new_then_block, new_else_statement) = .expand_context_for_bindings(condition, acc: None, then_block, else_statement, span)
         let checked_condition = .typecheck_expression_and_dereference_if_needed(new_condition, scope_id, safety_mode, type_hint: None, span)
+
         if not checked_condition.type().equals(builtin(BuiltinType::Bool)) {
             .error("Condition must be a boolean expression", new_condition.span())
         }
 
-        let checked_block = .typecheck_block(new_then_block, parent_scope_id: scope_id, safety_mode)
+        let checked_block = .typecheck_block(new_then_block!, parent_scope_id: scope_id, safety_mode)
         if checked_block.yielded_type.has_value() {
-            .error("An 'if' block is not allowed to yield values", new_then_block.find_yield_span()!)
+            .error("An 'if' block is not allowed to yield values", new_then_block!.find_yield_span()!)
         }
 
         mut checked_else: CheckedStatement? = None
@@ -3913,6 +3915,10 @@ struct Typechecker {
         .add_var_to_scope(scope_id: catch_scope_id, name: error_name, var_id: error_id, span: error_span)
         let checked_catch_block = .typecheck_block(catch_block, parent_scope_id: catch_scope_id, safety_mode)
 
+        if checked_catch_block.yielded_type.has_value() {
+            .error("A ‘catch’ block as part of a try block is not allowed to yield values", catch_block.find_yield_span()!)
+        }
+
         return CheckedExpression::TryBlock(stmt: checked_stmt, catch_block: checked_catch_block, error_name, error_span, span, type_id: void_type_id())
     }
 
@@ -4042,7 +4048,9 @@ struct Typechecker {
             type_hint = Some(.get_function(.current_function_id!).return_type_id)
         }
 
-        let checked_expr = .typecheck_expression(expr!, scope_id, safety_mode, type_hint)
+        let (new_condition, new_then_block, new_else_statement) = .expand_context_for_bindings(condition: expr!, acc: None, then_block: None, else_statement: None, span)
+        let checked_expr = .typecheck_expression_and_dereference_if_needed(new_condition, scope_id, safety_mode, type_hint, span)
+
         return CheckedStatement::Return(val: checked_expr, span)
     }
 
@@ -4063,7 +4071,7 @@ struct Typechecker {
         return checked_expr
     }
 
-    function typecheck_indexed_struct(mut this, expr: ParsedExpression, field: String, scope_id: ScopeId, is_optional: bool, safety_mode: SafetyMode, span: Span) throws -> CheckedExpression {
+    function typecheck_indexed_struct(mut this, expr: ParsedExpression, field_name: String, scope_id: ScopeId, is_optional: bool, safety_mode: SafetyMode, span: Span) throws -> CheckedExpression {
         let checked_expr = .typecheck_expression_and_dereference_if_needed(expr, scope_id, safety_mode, type_hint: None, span)
         let checked_expr_type_id = checked_expr.type()
         let checked_expr_type = .get_type(checked_expr_type_id)
@@ -4077,7 +4085,7 @@ struct Typechecker {
                         .error("Optional chaining is only allowed on optional types", span)
                         return CheckedExpression::IndexedStruct(
                             expr: checked_expr
-                            index: field
+                            index: field_name
                             span
                             is_optional
                             type_id: unknown_type_id())
@@ -4089,10 +4097,10 @@ struct Typechecker {
                 match .get_type(type_id) {
                     GenericInstance(id: struct_id) | Struct(struct_id) => {
                         let structure = .get_struct(struct_id)
-                        for member_id in structure.fields.iterator() {
-                            let member = .get_variable(member_id)
+                        for field in structure.fields.iterator() {
+                            let member = .get_variable(field.variable_id)
 
-                            if member.name == field {
+                            if member.name == field_name {
                                 mut resolved_type_id = .resolve_type_var(type_var_type_id: member.type_id, scope_id)
                                 if is_optional {
                                     resolved_type_id = .find_or_add_type_id(Type::GenericInstance(id: optional_struct_id, args: [resolved_type_id]))
@@ -4101,14 +4109,14 @@ struct Typechecker {
                                 .check_member_access(accessor: scope_id, accessee: structure.scope_id, member, span)
                                 return CheckedExpression::IndexedStruct(
                                     expr: checked_expr
-                                    index: field
+                                    index: field_name
                                     span
                                     is_optional
                                     type_id: resolved_type_id)
                             }
                         }
 
-                        .error(format("unknown member of struct: {}.{}", structure.name, field), span)
+                        .error(format("unknown member of struct: {}.{}", structure.name, field_name), span)
                     }
                     else => .error(format("Member field access on value of non-struct type ‘{}’", .type_name(checked_expr_type_id)), span)
                 }
@@ -4120,7 +4128,7 @@ struct Typechecker {
 
                 let structure = .get_struct(struct_id)
 
-                let field_record = .lookup_struct_field(struct_id, name: field)
+                let field_record = .lookup_struct_field(struct_id, name: field_name)
                 if field_record.has_value() {
                     let member = .get_variable(field_record!.field_id)
                     let resolved_type_id = .resolve_type_var(type_var_type_id: member.type_id, scope_id)
@@ -4128,13 +4136,13 @@ struct Typechecker {
                     .check_member_access(accessor: scope_id, accessee: .get_struct(field_record!.struct_id).scope_id, member, span)
                     return CheckedExpression::IndexedStruct(
                         expr: checked_expr
-                        index: field
+                        index: field_name
                         span
                         is_optional
                         type_id: resolved_type_id)
                 }
 
-                .error(format("unknown member of struct: {}.{}", structure.name, field), span)
+                .error(format("unknown member of struct: {}.{}", structure.name, field_name), span)
             }
             else => .error(format("Member field access on value of non-struct type ‘{}’", .type_name(checked_expr_type_id)), span)
         }
@@ -4142,7 +4150,7 @@ struct Typechecker {
         // FIXME: Unify with type
         return CheckedExpression::IndexedStruct(
             expr: checked_expr
-            index: field
+            index: field_name
             span
             is_optional
             type_id: unknown_type_id())
@@ -4439,7 +4447,7 @@ struct Typechecker {
     }
 
     function typecheck_expression(mut this, anon expr: ParsedExpression, scope_id: ScopeId, safety_mode: SafetyMode, type_hint: TypeId?) throws -> CheckedExpression => match expr {
-        IndexedStruct(expr, field, span, is_optional) => .typecheck_indexed_struct(expr, field, scope_id, is_optional, safety_mode, span)
+        IndexedStruct(expr, field_name, span, is_optional) => .typecheck_indexed_struct(expr, field_name, scope_id, is_optional, safety_mode, span)
         Boolean(val, span) => CheckedExpression::Boolean(val, span)
         NumericConstant(val, span) => {
             mut type_hint_unwrapped = type_hint
@@ -4890,7 +4898,7 @@ struct Typechecker {
         }
         JaktDictionary(values, span) => .typecheck_dictionary(values, span, scope_id, safety_mode, type_hint)
         Set(values, span) => .typecheck_set(values, span, scope_id, safety_mode, type_hint)
-        Function(captures, params, can_throw, return_type, block, span) => .typecheck_lambda(captures, params, can_throw, return_type, block, span, scope_id, safety_mode)
+        Function(captures, params, can_throw, is_fat_arrow, return_type, block, span) => .typecheck_lambda(captures, params, can_throw, is_fat_arrow, return_type, block, span, scope_id, safety_mode)
         Try(expr, catch_block, catch_name, span) => .typecheck_try(expr, catch_block, catch_name, scope_id, safety_mode, span, type_hint)
         TryBlock(stmt, catch_block, error_name, error_span, span) => .typecheck_try_block(stmt, error_name, error_span, catch_block, scope_id, safety_mode, span)
         Operator => {
@@ -4971,7 +4979,7 @@ struct Typechecker {
         return None
     }
 
-    function typecheck_lambda(mut this, captures: [ParsedCapture], params: [ParsedParameter], can_throw: bool, return_type: ParsedType, block: ParsedBlock, span: Span, scope_id: ScopeId, safety_mode: SafetyMode) throws -> CheckedExpression {
+    function typecheck_lambda(mut this, captures: [ParsedCapture], params: [ParsedParameter], can_throw: bool, is_fat_arrow: bool, return_type: ParsedType, block: ParsedBlock, span: Span, scope_id: ScopeId, safety_mode: SafetyMode) throws -> CheckedExpression {
         let synthetic_type = ParsedType::Function(
             params
             can_throw
@@ -5026,13 +5034,20 @@ struct Typechecker {
 
         let checked_block = .typecheck_block(parsed_block: block, parent_scope_id: lambda_scope_id, safety_mode)
 
-        if return_type_id.equals(unknown_type_id())
-            and not checked_block.statements.is_empty() {
-
-            if checked_block.statements.last()! is Return(val)
-                and val.has_value() {
-
+        if return_type_id.equals(unknown_type_id()) {
+            mut return_type_updated = false
+            if not is_fat_arrow and return_type is Empty {
+                return_type_id = void_type_id()
+                return_type_updated = true
+            } else if is_fat_arrow and 
+                not checked_block.statements.is_empty() and
+                checked_block.statements.last()! is Return(val) and 
+                val.has_value() {
                 return_type_id = .resolve_type_var(type_var_type_id: val!.type(), scope_id: lambda_scope_id)
+                return_type_updated = true
+            }
+
+            if return_type_updated {
                 type_id = match .get_type(type_id) {
                     Function(params, can_throw, pseudo_function_id) => .find_or_add_type_id(Type::Function(
                         params
@@ -5055,7 +5070,8 @@ struct Typechecker {
             block: checked_block
             span
             type_id
-            pseudo_function_id)
+            pseudo_function_id
+        )
     }
 
     function typecheck_namespaced_var_or_simple_enum_constructor_call(mut this, name: String, namespace_: [String], scope_id: ScopeId, safety_mode: SafetyMode, type_hint: TypeId?, span: Span) throws -> CheckedExpression {
@@ -5200,6 +5216,9 @@ struct Typechecker {
     function typecheck_set(mut this, values: [ParsedExpression], span: Span, scope_id: ScopeId, safety_mode: SafetyMode, type_hint: TypeId?) throws -> CheckedExpression {
         if .dump_try_hints {
             .dump_try_hint(span)
+        }
+        if not .get_scope(scope_id).can_throw {
+            .error("Set initialization needs to be in a try statement or a function marked as throws", span)
         }
         mut inner_type_id = unknown_type_id()
         mut inner_type_span: Span? = None
@@ -5708,7 +5727,9 @@ struct Typechecker {
                                 }
                                 is_value_match = true
 
-                                let checked_expression = .typecheck_expression(expr, scope_id, safety_mode, type_hint: Some(subject_type_id))
+                                let (new_condition, new_then_block, new_else_statement) = .expand_context_for_bindings(condition: expr, acc: None, then_block: None, else_statement: None, span)
+                                let checked_expression = .typecheck_expression_and_dereference_if_needed(new_condition, scope_id, safety_mode, type_hint: Some(subject_type_id), span)
+
                                 if not checked_expression.to_number_constant(program: .program).has_value() {
                                     all_variants_constant = false
                                 }
@@ -6112,7 +6133,12 @@ struct Typechecker {
                 return_type = callee.return_type_id
                 let scope_containing_callee = .get_scope(callee.function_scope_id).parent!
 
-                .check_method_access(accessor: caller_scope_id, accessee: scope_containing_callee, method: callee, span)
+                if callee.type is ImplicitConstructor {
+                    let struct_ = .get_struct(callee.struct_id!)
+                    .check_implicit_constructor_argument_access(caller_scope_id, call, struct_)
+                } else {
+                    .check_method_access(accessor: caller_scope_id, accessee: scope_containing_callee, method: callee, span)
+                }
 
                 // If the user gave us explicit type arguments, let's use them in our substitutions
                 mut type_arg_index = 0uz
@@ -6399,6 +6425,20 @@ struct Typechecker {
         }
 
         return checked_call
+    }
+
+    function check_implicit_constructor_argument_access(mut this, caller_scope_id: ScopeId, call: ParsedCall, struct_: CheckedStruct)  throws {
+        if not .scope_can_access(accessor:caller_scope_id, accessee:struct_.scope_id) {
+            for arg in call.args.iterator() {
+                for field in struct_.fields.iterator() {
+                    let variable = .get_variable(field.variable_id)
+                    if (variable.name == arg.0 and variable.visibility is Private) {
+                        .error(format("Can't access field '{}' when calling implicit constructor of '{}' because it is marked private", variable.name, struct_.name), arg.1)
+                        return
+                    }
+                }
+            }
+        }
     }
 
     function resolve_default_params(mut this, params: [CheckedParameter], args: [(String, Span, ParsedExpression)], scope_id: ScopeId, safety_mode: SafetyMode, arg_offset: usize, span: Span) throws -> [(String, Span, CheckedExpression)] {

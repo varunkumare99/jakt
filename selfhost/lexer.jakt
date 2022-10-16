@@ -49,8 +49,10 @@ enum Token {
     Asterisk(Span)
     Ampersand(Span)
     AmpersandEqual(Span)
+    AmpersandAmpersand(Span)
     Pipe(Span)
     PipeEqual(Span)
+    PipePipe(Span)
     Caret(Span)
     CaretEqual(Span)
     Dollar(Span)
@@ -117,7 +119,7 @@ enum Token {
     Guard(Span)
 
     // Catch-all for failed parses
-    Garbage(Span)
+    Garbage(consumed: String?, span: Span)
 
     public function span(this) => match this {
         else(span) => span
@@ -334,8 +336,9 @@ struct Lexer {
 
         if .eof() {
             .error("unexpected eof", .span(start, end: start))
-            return Token::Garbage(.span(start, end: start))
+            return Token::Garbage(consumed: None, span: .span(start, end: start))
         }
+
         if is_ascii_digit(.peek()) {  
             return .lex_number()
         } else if is_ascii_alpha(.peek()) or .peek() == b'_' {
@@ -360,7 +363,7 @@ struct Lexer {
         let unknown_char = .input[.index]
         let end = ++.index
         .error(format("unknown character: {:c}", unknown_char), .span(start, end))
-        return Token::Garbage(.span(start, end))
+        return Token::Garbage(consumed: format("{:c}", unknown_char), span: .span(start, end))
     }
 
     function valid_digit(mut this, prefix: LiteralPrefix, digit: u8, decimal_allowed: bool = true) -> bool => match prefix {
@@ -496,7 +499,7 @@ struct Lexer {
 
         if .eof() {
             .error("unexpected eof", .span(start, end: start))
-            return Token::Garbage(.span(start, end: start))
+            return Token::Garbage(consumed: None, span: .span(start, end: start))
         }
 
         mut escaped = false
@@ -599,6 +602,7 @@ struct Lexer {
         let start = .index++
         return match .peek() {
             b'=' => Token::PipeEqual(.span(start, end: ++.index))
+            b'|' => Token::PipePipe(.span(start, end: ++.index))
             else => Token::Pipe(.span(start: .index - 1, end: .index))
         }
     }
@@ -623,6 +627,7 @@ struct Lexer {
         let start = .index++
         return match .peek() {
             b'=' => Token::AmpersandEqual(.span(start, end: ++.index))
+            b'&' => Token::AmpersandAmpersand(.span(start, end: ++.index))
             else => Token::Ampersand(.span(start: .index - 1, end: .index))
         }
     }

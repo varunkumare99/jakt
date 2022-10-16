@@ -107,14 +107,13 @@ enum ImportName {
     }
 
     function literal_name(this) -> String {
-        match this {
-            Literal(name) => {
-                return name
-            }
-            else => {
-                panic("cannot get literal name of non-literal import name")
-            }
+        // FIXME: this has to be reassigned here to be used as an enum is binding
+        let that = this
+        guard that is Literal(name) else {
+            panic("cannot get literal name of non-literal import name")
         }
+
+        return name
     }
 
     function span(this) -> Span => match this {
@@ -819,7 +818,7 @@ boxed enum ParsedExpression {
     Call(call: ParsedCall, span: Span)
     MethodCall(expr: ParsedExpression, call: ParsedCall, is_optional: bool, span: Span)
     IndexedTuple(expr: ParsedExpression, index: usize, is_optional: bool, span: Span)
-    IndexedStruct(expr: ParsedExpression, field: String, is_optional: bool, span: Span)
+    IndexedStruct(expr: ParsedExpression, field_name: String, is_optional: bool, span: Span)
     Var(name: String, span: Span)
     IndexedExpression(base: ParsedExpression, index: ParsedExpression, span: Span)
     UnaryOp(expr: ParsedExpression, op: UnaryOperator, span: Span)
@@ -836,7 +835,7 @@ boxed enum ParsedExpression {
     Match(expr: ParsedExpression, cases: [ParsedMatchCase], span: Span, marker_span: Span)
     EnumVariantArg(expr: ParsedExpression, arg: EnumVariantPatternArgument, enum_variant: ParsedType, span: Span)
     NamespacedVar(name: String, namespace_: [String], span: Span)
-    Function(captures: [ParsedCapture], params: [ParsedParameter], can_throw: bool, return_type: ParsedType, block: ParsedBlock, span: Span)
+    Function(captures: [ParsedCapture], params: [ParsedParameter], can_throw: bool, is_fat_arrow: bool, return_type: ParsedType, block: ParsedBlock, span: Span)
     Try(expr: ParsedExpression, catch_block: ParsedBlock?, catch_name: String?, span: Span)
     TryBlock(stmt: ParsedStatement, error_name: String, error_span: Span, catch_block: ParsedBlock, span: Span)
     Garbage(Span)
@@ -925,8 +924,8 @@ boxed enum ParsedExpression {
             IndexedTuple(expr: rhs_expr, index: rhs_index, is_optional: rhs_optional) => lhs_optional == rhs_optional and lhs_expr.equals(rhs_expr) and lhs_index == rhs_index
             else => false
         }
-        IndexedStruct(expr: lhs_expr, field: lhs_field, is_optional: lhs_optional) => match rhs_expression {
-            IndexedStruct(expr: rhs_expr, field: rhs_field, is_optional: rhs_optional) => lhs_optional == rhs_optional and lhs_expr.equals(rhs_expr) and lhs_field == rhs_field
+        IndexedStruct(expr: lhs_expr, field_name: lhs_field, is_optional: lhs_optional) => match rhs_expression {
+            IndexedStruct(expr: rhs_expr, field_name: rhs_field, is_optional: rhs_optional) => lhs_optional == rhs_optional and lhs_expr.equals(rhs_expr) and lhs_field == rhs_field
             else => false
         }
         Var(name: lhs_name) => match rhs_expression {
@@ -1099,10 +1098,10 @@ boxed enum ParsedExpression {
             TryBlock(stmt: rhs_stmt, error_name: rhs_error_name, catch_block: rhs_catch_block) => lhs_stmt.equals(rhs_stmt) and (lhs_error_name == rhs_error_name) and lhs_catch_block.equals(rhs_catch_block)
             else => false
         }
-        Function(captures: lhs_captures, params: lhs_params, can_throw: lsh_can_throw, return_type: lhs_return_type) => match rhs_expression {
-            Function(captures: rhs_captures, params: rhs_params, can_throw: rsh_can_throw, return_type: rhs_return_type) => {
+        Function(captures: lhs_captures, params: lhs_params, can_throw: lhs_can_throw, return_type: lhs_return_type) => match rhs_expression {
+            Function(captures: rhs_captures, params: rhs_params, can_throw: rhs_can_throw, return_type: rhs_return_type) => {
                 guard lhs_return_type.equals(rhs_return_type) and 
-                    lsh_can_throw == rsh_can_throw and
+                    lhs_can_throw == rhs_can_throw and
                     lhs_captures.size() == rhs_captures.size() and
                     lhs_params.size() == rhs_params.size() else {
                     return false
@@ -1144,6 +1143,7 @@ struct ParsedField {
     // FIXME: It would be nice to extend the ParsedVarDecl struct instead.
     var_decl: ParsedVarDecl
     visibility: Visibility
+    default_value: ParsedExpression?
 }
 
 struct ParsedMethod {
@@ -1622,12 +1622,12 @@ struct Parser {
 
                     return Some(defines)
                 }
-                else => {
-                    .error("Expected 'define' or 'undefine' in include action"
-                            .current().span())
-                    return None
-                }
+                else => {}
             }
+
+            .error("Expected 'define' or 'undefine' in include action"
+                    .current().span())
+            return None
         } else {
             .error("Expected 'define' or 'undefine' in include action"
                     .current().span())
@@ -2453,9 +2453,17 @@ struct Parser {
             .error("Field missing type", parsed_variable_declaration.span)
         }
 
+        mut default_value: ParsedExpression? = None
+
+        if .peek(0) is Equal {
+            .index++
+            default_value = .parse_expression(allow_assignments: false, allow_newlines: false)
+        }
+
         return ParsedField(
             var_decl: parsed_variable_declaration,
             visibility,
+            default_value
         )
     }
 
@@ -3654,8 +3662,10 @@ struct Parser {
             else => ParsedType::Empty
         }
 
+        mut is_fat_arrow = false
         let block = match .current() {
             FatArrow => {
+                is_fat_arrow = true
                 .index++
                 let expr = .parse_expression(allow_assignments: true, allow_newlines: false)
                 let span = expr.span()
@@ -3664,7 +3674,7 @@ struct Parser {
             else => .parse_block()
         }
 
-        return ParsedExpression::Function(captures, params, can_throw, return_type, block, span: merge_spans(start, .current().span()))
+        return ParsedExpression::Function(captures, params, can_throw, is_fat_arrow, return_type, block, span: merge_spans(start, .current().span()))
     }
 
     function parse_asterisk(mut this) throws -> ParsedExpression {
@@ -3873,7 +3883,7 @@ struct Parser {
                                 }
                                 else => ParsedExpression::IndexedStruct(
                                     expr: result
-                                    field: name
+                                    field_name: name
                                     is_optional
                                     span: merge_spans(start, end: .current().span()))
                             }
@@ -3916,14 +3926,13 @@ struct Parser {
         } else {
             .error("Expected namespace", expr.span())
         }
-        if .eof() {
-            .error("Incomplete static method call", .current().span())
-        }
+
         while not .eof() {
             guard .current() is Identifier(name: current_name) else {
                 .error("Unsupported static method call", .current().span())
-                    return expr
+                return expr
             }
+
             .index++
             if .current() is LParen {
                 .index--
@@ -3931,15 +3940,7 @@ struct Parser {
                 call!.namespace_ = namespace_
                 return ParsedExpression::Call(call: call!, span: merge_spans(expr.span(), .current().span()))
             }
-            if .current() is ColonColon {
-                if .previous() is Identifier(name) {
-                    namespace_.push(name)
-                } else {
-                    .error("Expected namespace", expr.span())
-                }
-                .index++
-                continue
-            }
+
             if .current() is LessThan {
                 // Generic function arguments
                 .index--
@@ -3951,16 +3952,30 @@ struct Parser {
                 }
                 return ParsedExpression::Garbage(.current().span())
             }
-            return ParsedExpression::NamespacedVar(
-                name: current_name,
-                namespace_,
-                span: merge_spans(start, .current().span())
-            )
+
+            if .current() is ColonColon {
+                if .previous() is Identifier(name) {
+                    namespace_.push(name)
+                } else {
+                    .error("Expected namespace", expr.span())
+                }
+                .index++
+            } else {
+                return ParsedExpression::NamespacedVar(
+                    name: current_name,
+                    namespace_,
+                    span: merge_spans(start, .current().span())
+                )
+            }
         }
+
+        .error("Incomplete static method call", .current().span())
+        return expr
     }
 
     function parse_operator(mut this, allow_assignments: bool) throws -> ParsedExpression {
         let span = .current().span()
+
         let op = match .current() {
             QuestionMarkQuestionMark => BinaryOperator::NoneCoalescing
             Plus => BinaryOperator::Add
@@ -3977,7 +3992,15 @@ struct Parser {
             GreaterThan => BinaryOperator::GreaterThan
             GreaterThanOrEqual => BinaryOperator::GreaterThanOrEqual
             Ampersand => BinaryOperator::BitwiseAnd
+            AmpersandAmpersand => {
+                .error("‘&&’ is not allowed, use ‘and’ instead", span);
+                yield BinaryOperator::LogicalAnd
+            }
             Pipe => BinaryOperator::BitwiseOr
+            PipePipe => {
+                .error("‘||’ is not allowed, use ‘or’ instead", span);
+                yield BinaryOperator::LogicalOr
+            }
             Caret => BinaryOperator::BitwiseXor
             LeftShift => BinaryOperator::BitwiseLeftShift
             RightShift => BinaryOperator::BitwiseRightShift
